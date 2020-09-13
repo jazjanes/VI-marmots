@@ -1,0 +1,508 @@
+###### Marmot data pipeline for converting NGS reads to microsat type calls #######
+
+#updated 3 Oct 2018
+#updated 14 Nov 2018
+
+
+####################################################
+### BACKGROUND INSTALLATIONS ###
+
+#1.1 Python
+	#install python 3.7.1 (on mac) assuming Homebrew is already up and running
+		brew install python
+
+	#this installs python3 with pip3 package manager
+	#installed to /usr/local/bin/python3		#note python2.7 installed under /usr/bin/python 
+												#DON'T UNINSTALL THIS IT IS APPLE REQ'D
+												
+	#You can install Python packages with
+  	#pip3 install <package>
+	#They will install into the site-package directory
+  	#/usr/local/lib/python3.7/site-package											
+
+#1.2 Jupyter
+	#install jupyter notebooks for easier work arounds with python
+	#this is analagous to Rstudio for R
+		python3 -m pip install jupyter
+
+	#to run jupyter
+		jupyter notebook 		
+	
+	#will launch a window on mac using localhost port 
+	#NOTE: functionality for remote access over port 8888 is currently restricted by VIU
+	#firewall and proxy server permissions
+	#still waiting for IT to grant access
+	#copy paste this into browser when logging in for first time via browser (remote)
+		http://localhost:8888/?token=45c76ca0473167b8089d6879019fc2d399ce776a527e928c
+
+#1.3 PEAR
+	#obtain source code for PEAR (paired end read merger)
+	#https://sco.h-its.org/exelixis/web/software/pear/
+
+	#notes on PEAR:
+	#PEAR is an ultrafast, memory-efficient and highly accurate pair-end read merger. 
+	#It is fully parallelized and can run with as low as just a few kilobytes of memory.
+	
+	#PEAR requires libtool and autotool
+		brew install autoconf automake libtool
+	#now installed as glibtool etc
+	
+	#install git for cloning repository
+		brew install git
+
+		git clone https://github.com/xflouris/PEAR.git
+		cd PEAR-master
+		./configure
+		make
+		make install		#install at /usr/local/bin/pear
+		
+	#to run pear use /usr/local/bin/pear
+	#currently version 0.9.2 installed
+	
+#1.4 AdapterRemoval
+	#I'm installing adapterremoval as I think it can do all of the PEAR + Cutadapt steps in 
+	#one program
+		wget -O adapterremoval-2.1.7.tar.gz https://github.com/MikkelSchubert/adapterremoval/archive/v2.1.7.tar.gz
+		tar -xvzf adapterremoval-2.1.7.tar.gz		#x=extract, k=keepoldfiles, v=verbose, f=readfile
+		rm -r adapterremoval-2.1.7.tar.gz
+		cd adapterremoval-2.1.7
+		make
+		make install		#installed at /usr/local/bin/AdapterRemoval
+		
+		
+####################################################
+### PRE-PROCESSING NGS READS ###	
+
+#2.1 make a copy of the data files you want to work with - NEVER USE THE ORIGINAL
+	#this safe guards the original files against mistakes
+		cp /Volumes/Marmots/<directory> ~/Documents/
+		
+#2.2 check what files we are working with
+		ls /Users/janesj/Documents/MiSeq-VIM-July2018-84288757/FASTQ_Generation_2018-07-20_03_48_36Z-110261410
+	
+	#reads are currently stored in directories representing each individual marmot, within these directories
+	#are .gz compressed files that contain forward and reverse reads for each individual
+	#This tells us that the reads have automatically been demultiplexed (separated) by the sequencer
+	#but that the adapters and barcodes ligated to the ends of the reads are probably still present
+	
+	#move all gz files out of their directories and remove the directories
+		for i in *ds*
+		do
+			cd $i
+			mv *VIM* ..
+			cd ..
+		done
+		
+		rm -r *ds*		#requires the -r flag to make it recursive for directory removal
+		
+	#how many individuals/files are there
+		ls | wc -l 		#returns 192 files (divide by 2 = 96 indivs)
+		
+	#gunzip the fastq files - Note could also work with zless to view compressed version
+		gunzip *VIM*
+		
+	#view the first few lines of one of the fastq files
+		head <file>
+		
+	#shows typical fastq sequence format over 4 lines 
+	#line 1 = sequencer information, begins with @
+	#line 2 = raw sequence information
+	#line 3 = contains + (optional lines)
+	#line 4 = encodes quality score values (ASCII) for sequence on line 2, !=lowest quality, ~=highest quality
+	
+	
+####################################################
+### TRIMMING & MERGE NGS READS ###	
+	
+#adapters have already been removed in the demultiplexing by the Illumina platform
+
+#3.1 create script to loop over fastq files and merge reads
+		touch run_adapterremoval.sh			#create file for script
+		chmod 755 run_adapterremoval.sh		#change permissions for script
+		
+		vi run_adapterremoval.sh			#open script for editing
+
+		#!/bin/bash							#run in bash language
+		adapt=/usr/local/bin/AdapterRemoval		#create a variable for the program adapterremoval
+												#next bit runs a for loop over the marmot fastq files
+		for i in /Users/janesj/Documents/MiSeq-VIM-July2018-84288757/FASTQ_Generation_2018-07-20_03_48_36Z-110261410/*fastq
+		do
+        	base="${i%R*}"
+        
+        	echo "start adapterremoval"
+			
+			echo $base
+        	echo ${base}R1_001.fastq
+        
+        	$adapt --file1 ${base}R1_001.fastq --file2 ${base}R2_001.fastq --basename ${base}merged --trimns --trimqualities --collapse
+
+		done
+
+		echo "finished merging"
+		
+#3.2 move all the merged reads to corresponding directories for each individual 
+	#make a directory for each individual
+		for i in *fastq; do bas="${i%S*}"; echo $bas; mkdir ${bas}merged; done
+		
+#3.3 move each fastq file to its corresponding directory (made in previous step)
+		for i in *fastq; do bas="${i%R*}"; echo $bas; bas2="${i%S*}"; mv ${bas}merged.* ${bas2}merged; done
+		
+#3.4 create directory for original fastq files and move the original files there
+		mkdir original_fastq
+		mv *fastq original_fastq
+	
+		
+####################################################
+### USE FASTQC TO CHECK QUALITY ###
+
+#4.1 install fastQC 	#/Users/janesj/Documents/Software/FastQC.app
+
+#4.2 open each original fastq file in FastQC to obtain stats on reads, base call quality, length etc
+
+	
+		
+####################################################
+### SPLIT MERGED FILES BY PRIMER FOR EACH INDIVIDUAL ###		
+			
+#5.1 create a text file with the sequences for all the forward primers
+		touch forward_primers_sequence.txt		#create new file
+		vi forward_primers_sequence.txt			#open file for editing
+		a		#allows editing of file
+				#paste in primer sequences
+		:wq		#saves file
+		
+#5.4 do the same for the primer names
+		touch forward_primer_names.txt
+		vi forward_primer_names.txt
+		a		
+			#paste in primer names with indication it is forward
+		:wq
+		
+	#forward_primers_sequence.txt = primers
+	#forward_primer_names.txt = names of primers
+	
+	#make a script that will go into each VIM individual directory and search the fastq files
+	#for the primer sequences and create new fastq files for each primer (F/R) for each indiv
+		touch grep_primers.sh
+		chmod 755 grep_primers.sh		#change permissions to make script executable
+		vi grep_primers.sh		#edit script file
+		
+		#!/bin/bash								#add necessary script header telling system to read and run bash 
+		for i in VI*							#begin running a for loop over each directory beginning with VI
+		do
+        	echo $i								#print what directory is being read - which VI folder
+        	cd $i								#change directory
+		while read -r a && read -r b <&3		#create a nested while loop within the for loop to read from two files; <&3 specifies a new stdin line
+		do
+        	echo -e "$a\n$b"					#print the line from file a and file b on a new line to the terminal screen
+        	grep -A 2 -B 1 ^${a} *.collapsed | sed '/^--/d' >> ${b}.fastq		
+        										#search the file containing R1 in the name for text on line being read from file a 
+        										#and output the first 2 lines before and 1 line after the search line; output to a file 
+        										#using line read from file b as the name
+        										#NOTE: the -A and -B flags add file separators (new lines with --)
+        										#these need to be removed with sed
+		done < ../forward_primers_sequence.txt 3<../forward_primer_names.txt		#use the files specified as the input for a and b
+        	cd ..								# go back up a directory and repeat the process until all files with R1 string have been read
+		done
+		
+	#NOTE: because the reads are now merged, we only need to look for the forward primer sequence in each file and extract that
+	#we don't need to repeat the process for the reverse
+		
+#5.3 run the above mentioned script using this command	
+		./grep_primers.sh 
+	
+
+####################################################
+### GET STATS ON READS PER PRIMER PAIR ###	
+	
+#determine how many reads are in the original fastq file and how many went into each
+#primer subset file
+
+#NOTE: using grep to count the first line header of @ may produce incorrect numbers as some of the quality
+#score lines may start with @ also. Therefore, better to use wc and divide by 4
+
+#6.1 create a script to check the number of reads in each primer fastq file compared to the original fastq
+		touch get_stats_on_primer_reads.sh
+		chmod 755 get_stats_on_primer_reads.sh
+		vi get_stats_on_primer_reads.sh
+		a
+		
+		primer=/Users/janesj/Documents/MiSeq-VIM-July2018-84288757/FASTQ_Generation_2018-07-20_03_48_36Z-110261410/results/primer-read-numbers-post-merge.txt
+										#creating a variable for the newly created file so the script knows where to send the output
+		
+		order=/Users/janesj/Documents/MiSeq-VIM-July2018-84288757/FASTQ_Generation_2018-07-20_03_48_36Z-110261410/results/primer-name-order-post-merge.txt
+		
+		for i in /Users/janesj/Documents/MiSeq-VIM-July2018-84288757/FASTQ_Generation_2018-07-20_03_48_36Z-110261410/original_fastq/*R1*					
+										#commencing a for loop for each original indiv. marmot directory
+		do
+        	echo $i
+        	echo $i >> $order			#sending the name of the marmot directory to the primer file (>> means append, no overwriting)
+        	echo $(cat $i | wc -l)/4 | bc >> $primer
+        done
+        	
+		for a in /Users/janesj/Documents/MiSeq-VIM-July2018-84288757/FASTQ_Generation_2018-07-20_03_48_36Z-110261410/original_fastq/*R2*					
+										#within each marmot run a for loop over the original files containing R2 in the name
+		do
+        	echo $a >> $order			#send the name of each of those files to the primer file as a header for the number of reads
+        	echo $(cat $a | wc -l)/4 | bc >> $primer		#count number of lines in each file, divide by 4 and print to the primer file
+		done
+
+		for b in /Users/janesj/Documents/MiSeq-VIM-July2018-84288757/FASTQ_Generation_2018-07-20_03_48_36Z-110261410/*merged
+		do
+        	cd $b						*now print the number of lines for the merged read files for each primer
+        	
+        for c in *.collapsed
+        do
+        	echo $c
+        	echo $c >> $order
+        	echo $(cat $c | wc -l)/4 | bc >> $primer
+		done
+			cd ..
+		done
+
+#6.2 run the script 
+		./get_stats_on_primer_reads.sh
+		
+
+####################################################
+### RUN USEARCH TO DEREPLICATE MERGED READS ###	
+
+#this step will go through each merged read for each primer for each individual and place unique reads (i.e. varying length, SNP etc) into
+#a new file. This file should contain one representative of each unique sequence type found. Technically, there should be one unique sequence per 
+#primer per individual as its genotype shouldn't change
+
+#7.1 install USEARCH - downloaded from web as precompiled binary executable
+
+#7.2 change permissions of USEARCH 
+		chmod 755 USEARCH
+		
+	#path to executable /Users/janesj/Documents/Software/USEARCH
+	
+#7.3 run the fastx_uniques command		
+	#NOTE: this program can do a whole bunch of stuff, including merge paired reads!
+		usearch=/Users/janesj/Documents/Software/USEARCH
+		
+	#example command	$usearch -fastx_uniques <input> -fastaout <output> -sizeout -relabel Uniq -tabbedout <filename> 	
+	#-fastx_uniques = finds the unique reads; -fastaout = fasta file output; -fastqout = fastq file output
+	#-sizeout = use size annotations for sequence labels; -relabel = specific string to add to dereplicated sequences
+	#-tabbedout = create a tab file with fields 1-input label 2-output label 3-cluster number (number uniques) 4-member number (number sequences per unique)
+	#5-input label of first occurrence if relabel used
+	
+	#primary output file shows a printed copy of each unique sequence (line 2) and a header (line 1) that 
+	#details the total number of sequences deemed identical to that match. These are displayed in decreasing frequency order.
+	
+	#the tab file shows more detail around each sequence (paired reads) that match each unique sequence - maybe not necessary
+	#but easier to print it anyway
+	
+#7.4 run the script to do this using a for loop
+		./usearch_derep.sh
+		
+
+####################################################
+######		 
+	
+#8.1 create PATH for python3 that is systemwide
+		touch .bashrc
+		vi .bashrc
+		python3=/usr/local/bin/python3 ; export python3
+
+#3.2 install biopython
+		pip3 install biopython		#installed biopython 1.72
+	#could also use python3 -m pip install biopython
+	
+#3.3 run jupyter notebook
+		jupyter notebook
+		
+	##NOTE: DARBY PYTHON SCRIPT IS NOT GOING TO WORK FOR OUR PARTICULAR DATA SET UP 
+	## DUE TO DIFFERENCES IN PRIMER DESIGN
+		
+
+####################################################
+### FILTER DEREPLICATED FILES BY SIZE & LENGTH ###		
+
+#9.1 the dereplicated files have split the sequence over multiple lines, this needs to be fixed
+		touch fix_dereplicated_files.sh
+		chmod 755 fix_dereplicated_files.sh
+		vi fix_dereplicated_files.sh
+		
+		primers=/Users/janesj/Documents/MiSeq-VIM-July2018-84288757/FASTQ_Generation_2018-07-20_03_48_36Z-110261410/scripts/forward_primer_names.txt
+
+		for i in /Users/janesj/Documents/MiSeq-VIM-July2018-84288757/FASTQ_Generation_2018-07-20_03_48_36Z-110261410/*merged
+		do
+        	base="{i%_*}"
+        	echo $base
+
+        	cd $i
+
+		echo "start fixing files"
+
+		while read line
+		do
+       		echo $line
+        	new=$(echo "$line" | sed 's/_F//g')
+        	echo $new
+        	echo "start cat"
+
+        	cat $new | tr -d '\n' > ${new}_fixa.txt
+        	
+        	done < $primers
+
+        cd ..
+
+		done
+
+#9.2 run the script to fix the files
+		./fix_dereplicated_files.sh
+	
+	#now all info for each primer is on a single line
+	#need to split this back to one line per sequence for each of the primer files for each individual
+	
+		for i in /Users/janesj/Documents/MiSeq-VIM-July2018-84288757/FASTQ_Generation_2018-07-20_03_48_36Z-110261410/*merged
+		do
+        	base="{i%_*}"
+        	echo $base
+
+        	cd $i
+
+		echo "start fixing files"
+
+		for b in *_fixa.txt
+		do
+        	echo $b
+        	new="${b%_*}"
+	       	echo $new
+
+        	echo "start cat"
+
+			cat $b | tr '>' '\n' > ${new}_fixb.txt
+
+		done
+
+        	cd ..
+
+		done
+
+	#run script to do this
+		./split_dereplicated_files.sh
+		
+#9.3 work out longest and shortest length of each line in the fixed files (fixb)
+		touch min_max_lines.sh
+		chmod 755 min_max_lines.sh
+		vi min_max_lines.sh
+		
+		for i in /Users/janesj/Documents/MiSeq-VIM-July2018-84288757/FASTQ_Generation_2018-07-20_03_48_36Z-110261410/*merged
+		do
+        	echo $i
+        	cd $i
+        	
+		for a in *fixb.txt
+		do
+        	base="${a%f*}"
+        	echo $base
+
+        	cat $a | while read line
+		do
+        	count=$(echo $line | wc -c)
+        	echo $count > ${base}_line_length.txt
+		done
+		done
+        	cd ..
+		done
+
+	#run the script 
+		./min_max_lines.sh
+		
+#9.4 merge the info from fixb and line_length files - i.e. put in one file with two columns that can be sorted
+
+	#use the paste function 
+	#paste -d ";" file1 file2 > newfile
+	
+		for i in /Users/janesj/Documents/MiSeq-VIM-July2018-84288757/FASTQ_Generation_2018-07-20_03_48_36Z-110261410/*merged
+		do
+
+        	echo $i
+        	cd $i
+
+		for a in *fixb.txt
+		do
+        	echo $a
+        	base="${a%f*}"
+        	echo $base
+
+        	paste -d ";" $a ${base}line_length.txt > ${base}sorted_length.txt
+		done
+        	cd ..
+		done
+		
+	#run the script
+		./merge_usearch_linelength.sh
+		
+#9.5 sort the character length per line files by the highest and lowest number using sort and 
+	#print the min (head) and max (tail) numbers to a new file
+			
+		for i in /Users/janesj/Documents/MiSeq-VIM-July2018-84288757/FASTQ_Generation_2018-07-20_03_48_36Z-110261410/*merged
+		do
+
+        	cd $i
+
+		for a in *sorted_length.txt
+		do
+        	echo $a
+        	base="${a%s*}"
+        	echo $base
+
+			sort --field-separator=';' -n -k4 $a > ${base}temp_sorted.txt 	#-k4,2 = sorts based on key/column 4 then 2
+																			#-n = numerical order
+			awk -F';' '(NR>1) && ($4 > 100 )' ${base}temp_sorted.txt > ${base}temp2_sorted.txt	#NR = number record (line number)
+																								#$4 = column number
+																								#-F = field delimiter
+			rm ${base}temp_sorted.txt
+			sort --field-separator=';' -n -k2 ${base}temp2_sorted.txt > ${base}temp3_sorted.txt
+
+			rm ${base}temp2_sorted.txt
+			tail -n 10 ${base}temp3_sorted.txt > ${base}top10freq-size.txt
+
+			rm ${base}temp3_sorted.txt
+
+		done
+        	cd ..
+		done
+
+	#run the script
+		./find-most-freq-reads.sh 
+
+
+####################################################
+### RENAME FOLDERS & FILES READY FOR TRANSFER ###
+
+	#we now have a folder for each individual that contains files (named by locus) with the suffix _top10freq-size.txt
+	#to make life easier we are renaming all the locus files to also include the name of the individual so that people are less
+	#easily confused
+	
+#10.0 make a new script to automate the rename process
+		touch rename_final_files.sh
+		chmod 755 rename_final_files.sh
+		vi rename_final_files.sh
+		
+		for i in /Users/janesj/Documents/MiSeq-VIM-July2018-84288757/FASTQ_Generation_2018-07-20_03_48_36Z-110261410/*merged
+		do
+
+			base="${i%_*}"
+			echo $base
+			cd $i
+
+		for a in *_top10freq-size.txt
+		do
+			echo $a
+			echo $base
+
+			cp $a ${base}_$a
+
+		done
+			cd ..
+		done
+	
+	#run the script
+		./rename_final_files.sh
+		
+#10.1 all final renamed files have been placed in the directory FINAL-FILES
